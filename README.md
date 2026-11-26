@@ -1,0 +1,1 @@
+# Franchise-Kafe-Satu-Jaringan-Kasir-Semua-Cabang-Terhubung-ke-Pusat-Lewat-Tunnel-Redundan
