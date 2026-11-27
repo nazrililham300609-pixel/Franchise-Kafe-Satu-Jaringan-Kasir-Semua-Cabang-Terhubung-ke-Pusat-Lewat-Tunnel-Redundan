@@ -13,3 +13,146 @@
    ☕ Cabang-A     ☕ Cabang-B     ☕ Cabang-C
    🧾 Kasir        🧾 Kasir        🧾 Kasir
    📶 WiFi Tamu    📶 WiFi Tamu    📶 WiFi Tamu
+📋 Skema IP
+Lokasi	LAN Kasir 🧾	WiFi Tamu 📶	Tunnel WG 🔒	Tunnel SSTP 🛡️
+🏢 Pusat	10.0.0.0/24	-	172.16.1.1	172.16.2.1
+☕ Cabang-A	10.1.10.0/24	10.1.20.0/24	172.16.1.11	172.16.2.11
+☕ Cabang-B	10.2.10.0/24	10.2.20.0/24	172.16.1.12	172.16.2.12
+☕ Cabang-C	10.3.10.0/24	10.3.20.0/24	172.16.1.13	172.16.2.13
+🏢 1. KONFIGURASI PUSAT (HQ)
+🌐 Dual ISP + Failover
+routeros
+/ip address
+add address=203.0.113.2/30 interface=ether1 comment="ISP1-Utama"
+add address=198.51.100.2/30 interface=ether2 comment="ISP2-Backup"
+add address=10.0.0.1/24 interface=ether3 comment="LAN-Server-POS"
+# 🔁 Recursive failover (cek 8.8.8.8 lewat ISP1, 1.1.1.1 lewat ISP2)
+/ip route
+add dst-address=8.8.8.8 gateway=203.0.113.1 scope=10 comment="Check-ISP1"
+add dst-address=1.1.1.1 gateway=198.51.100.1 scope=10 comment="Check-ISP2"
+add dst-address=0.0.0.0/0 gateway=8.8.8.8 check-gateway=ping distance=1 comment="Default-ISP1"
+add dst-address=0.0.0.0/0 gateway=1.1.1.1 check-gateway=ping distance=2 comment="Default-ISP2
+/ip firewall nat
+add chain=srcnat out-interface=ether1 action=masquerade
+add chain=srcnat out-interface=ether2 action=masquerade
+🔒 Tunnel Utama: WireGuard
+routeros
+/interface wireguard
+add name=wg-hq listen-port=13231 comment="WG-Server-HQ"
+/ip address
+add address=172.16.1.1/24 interface=wg-hq
+# ☕ Peer tiap cabang
+/interface wireguard peers
+add interface=wg-hq name=cabang-A public-key="PUBKEY_CABANG_A" \
+    allowed-address=172.16.1.11/32,10.1.10.0/24,10.1.20.0/24 comment="☕ Cabang-A"
+add interface=wg-hq name=cabang-B public-key="PUBKEY_CABANG_B" \
+    allowed-address=172.16.1.12/32,10.2.10.0/24,10.2.20.0/24 comment="☕ Cabang-B"
+add interface=wg-hq name=cabang-C public-key="PUBKEY_CABANG_C" \
+    allowed-address=172.16.1.13/32,10.3.10.0/24,10.3.20.0/24 comment="☕ Cabang-C"
+🛡️ Tunnel Redundan: SSTP (Backup)
+routeros
+/certificate
+add name=ca-kafe common-name=ca-kafe days-valid=3650 key-usage=key-cert-sign,crl-sign
+sign ca-kafe
+add name=sstp-server common-name=hq.kafe.local days-valid=3650
+sign sstp-server ca=ca-kafe
+/ip pool add name=pool-sstp ranges=172.16.2.100-172.16.2.200
+/ppp profile add name=prof-sstp local-address=172.16.2.1 remote-address=pool-sstp
+/ppp secret
+add name=cabang-A password="PassA!2026" profile=prof-sstp service=sstp remote-address=172.16.2.11
+add name=cabang-B password="PassB!2026" profile=prof-sstp service=sstp remote-address=172.16.2.12
+add name=cabang-C password="PassC!2026" profile=prof-sstp service=sstp remote-address=172.16.2.13
+/interface sstp-server server
+set enabled=yes certificate=sstp-server default-profile=prof-sstp
+🧭 Routing Dinamis OSPF (Failover Otomatis Antar Tunnel)
+routeros
+/routing ospf instance add name=kafe-ospf version=2 router-id=10.255.255.1
+/routing ospf area add name=backbone area-id=0.0.0.0 instance=kafe-ospf
+# 💪 WG cost rendah = jalur utama, SSTP cost tinggi = cadangan
+/routing ospf interface-template
+add area=backbone interfaces=wg-hq cost=10 type=ptmp comment="🔒 Jalur Utama"
+add area=backbone interfaces=10.0.0.0/24 passive comment="LAN Server"
+🔥 Firewall HQ
+routeros
+/ip firewall filter
+add chain=input action=accept connection-state=established,related
+add chain=input action=drop connection-state=invalid
+add chain=input action=accept protocol=udp dst-port=13231 comment="WireGuard"
+add chain=input action=accept protocol=tcp dst-port=443 comment="SSTP"
+add chain=input action=accept protocol=ospf comment="OSPF"
+add chain=input action=accept protocol=icmp
+add chain=input action=drop in-interface=ether1 comment="Drop WAN lain"
+add chain=input action=drop in-interface=ether2
+# 🧾 Kasir boleh ke server POS saja
+add chain=forward action=accept connection-state=established,related
+add chain=forward action=accept src-address=10.0.0.0/8 dst-address=10.0.0.10 dst-port=443,3306 protocol=tcp comment="Kasir→POS"
+add chain=forward action=drop src-address=10.0.0.0/8 dst-address=10.0.0.0/8 comment="Isolasi antar cabang"
+☕ 2. KONFIGURASI CABANG (Contoh Cabang-A)
+🌐 Dual WAN
+routeros
+/ip dhcp-client
+add interface=ether1 add-default-route=no comment="ISP-Cabang"
+/ip address add address=10.1.10.1/24 interface=bridge-kasir
+/ip address add address=10.1.20.1/24 interface=bridge-tamu
+/interface bridge add name=bridge-kasir
+/interface bridge add name=bridge-tamu
+/interface bridge port
+add bridge=bridge-kasir interface=ether3 comment="🧾 Kasir"
+add bridge=bridge-kasir interface=ether4 comment="🖨️ Printer"
+add bridge=bridge-tamu interface=wlan1 comment="📶 WiFi Tamu"
+🔒 WireGuard Client (Utama)
+routeros
+/interface wireguard add name=wg-pusat listen-port=13231
+/ip address add address=172.16.1.11/24 interface=wg-pusat
+/interface wireguard peers
+add interface=wg-pusat public-key="PUBKEY_HQ" endpoint-address=203.0.113.2 \
+    endpoint-port=13231 allowed-address=0.0.0.0/0 persistent-keepalive=10s \
+    comment="🏢 HQ"
+🛡️ SSTP Client (Cadangan)
+routeros
+/interface sstp-client
+add name=sstp-pusat connect-to=198.51.100.2 user=cabang-A password="PassA!2026" \
+    profile=default-encryption verify-server-certificate=no \
+    keepalive-timeout=10 comment="🛡️ Backup via ISP2 HQ"
+🧭 OSPF Cabang + Cost Redundan
+routeros
+/routing ospf instance add name=kafe-ospf version=2 router-id=10.255.255.11
+/routing ospf area add name=backbone area-id=0.0.0.0 instance=kafe-ospf
+/routing ospf interface-template
+add area=backbone interfaces=wg-pusat cost=10 type=ptmp comment="🔒 Utama"
+add area=backbone interfaces=sstp-pusat cost=100 type=ptmp comment="🛡️ Cadangan"
+add area=backbone interfaces=bridge-kasir passive
+📶 QoS: Kasir Prioritas, Tamu Dibatasi
+routeros
+/queue simple
+add name="🧾 Kasir-Prioritas" target=10.1.10.0/24 priority=1/1 \
+    max-limit=20M/20M limit-at=5M/5M
+add name="📶 WiFi-Tamu" target=10.1.20.0/24 priority=8/8 \
+    max-limit=10M/10M
+/ip firewall filter
+add chain=forward action=drop in-interface=bridge-tamu out-interface=wg-pusat comment="🚫 Tamu dilarang ke pusat"
+add chain=forward action=drop in-interface=bridge-tamu out-interface=sstp-pusat
+🤖 3. SCRIPT MONITORING & NOTIFIKASI TELEGRAM
+routeros
+/system script add name=cek-tunnel source={
+  :local tg "https://api.telegram.org/botTOKEN/sendMessage"
+  :local chat "CHAT_ID"
+  :local ok [/ping 172.16.1.1 count=3 interface=wg-pusat]
+  :if ($ok = 0) do={
+    /tool fetch url="$tg" http-method=post \
+      http-data="chat_id=$chat&text=⚠️ Cabang-A: WireGuard DOWN, pindah ke SSTP 🛡️" keep-result=no}}
+/system scheduler add name=cek-tunnel interval=1m on-event=cek-tunnel
+✅ 4. CHECKLIST PENGUJIAN
+Tes	Perintah	Hasil Diharapkan
+🔒 Tunnel hidup	/interface wireguard peers print	last-handshake < 2 menit
+🧭 OSPF	/routing ospf neighbor print	State = Full
+🧾 Kasir → POS	/ping 10.0.0.10 src-address=10.1.10.1	Reply
+💥 Failover	Cabut ISP1 HQ	Tunnel pindah ke SSTP < 30 detik
+🚫 Isolasi	Ping Cabang-A → Cabang-B	Drop (sesuai kebijakan)
+🎯 Fitur Unggulan
+✅ Dual tunnel redundan: WireGuard (cepat) + SSTP (tembus firewall ISP)
+✅ Failover otomatis via OSPF cost
+✅ Dual ISP di pusat
+✅ Segmentasi: kasir 🧾 vs WiFi tamu 📶
+✅ Alert Telegram saat tunnel putus
+✅ Mudah ditambah cabang baru (tinggal copy konfigurasi + 1 peer)
