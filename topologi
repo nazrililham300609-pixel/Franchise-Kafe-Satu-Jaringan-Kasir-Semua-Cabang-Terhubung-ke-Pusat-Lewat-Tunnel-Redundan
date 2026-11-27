@@ -1,1 +1,15 @@
-
+🗺️ Topologi
+                    ☁️ INTERNET
+        ┌───────────────┴───────────────┐
+   🌐 ISP-1 (Utama)               🌐 ISP-2 (Backup)
+        └───────────────┬───────────────┘
+                 🏢 PUSAT (HQ) – CCR/RB4011
+                 🖥️ Server POS | 💾 DB | 📹 NVR
+        ┌───────────────┼───────────────┐
+   🔒 Tunnel-1      🔒 Tunnel-2     🔒 Tunnel-3
+   (WG + backup     (WG + backup    (WG + backup
+    SSTP)            SSTP)           SSTP)
+        │               │               │
+   ☕ Cabang-A     ☕ Cabang-B     ☕ Cabang-C
+   🧾 Kasir        🧾 Kasir        🧾 Kasir
+   📶 WiFi Tamu    📶 WiFi Tamu    📶 WiFi Tamu
